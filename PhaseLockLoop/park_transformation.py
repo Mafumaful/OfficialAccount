@@ -23,7 +23,7 @@ OMEGA = TAU * F_ELECTRICAL  # electrical speed [rad/s]
 V_AMPLITUDE = 1.0           # amplitude of phase voltages
 PHASE_OFFSET = 0.0          # initial electrical angle [rad]
 SHOW_ZERO_AXIS = True       # toggle to display 0-sequence
-DURATION = 8                # animation seconds
+DURATION = 5                # animation seconds
 
 # ---------- Math Helpers ----------
 
@@ -119,9 +119,24 @@ class ParkTransformation(Scene):
         self.play(Create(curve_a), Create(curve_b), Create(curve_c))
 
         # Moving dots on each waveform at current t
-        dot_a = always_redraw(lambda: Dot(color=colors["a"]).move_to(left_panel.c2p(t_tracker.get_value(), V_AMPLITUDE*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET))))
-        dot_b = always_redraw(lambda: Dot(color=colors["b"]).move_to(left_panel.c2p(t_tracker.get_value(), V_AMPLITUDE*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET-2*np.pi/3))))
-        dot_c = always_redraw(lambda: Dot(color=colors["c"]).move_to(left_panel.c2p(t_tracker.get_value(), V_AMPLITUDE*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET+2*np.pi/3))))
+        dot_a = always_redraw(lambda: Dot(color=colors["a"]).move_to(
+            left_panel.c2p(
+                min(t_tracker.get_value(), DURATION),
+                V_AMPLITUDE*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET)
+            )
+        ))
+        dot_b = always_redraw(lambda: Dot(color=colors["b"]).move_to(
+            left_panel.c2p(
+                min(t_tracker.get_value(), DURATION),
+                V_AMPLITUDE*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET-2*np.pi/3)
+            )
+        ))
+        dot_c = always_redraw(lambda: Dot(color=colors["c"]).move_to(
+            left_panel.c2p(
+                min(t_tracker.get_value(), DURATION),
+                V_AMPLITUDE*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET+2*np.pi/3)
+            )
+        ))
         self.play(FadeIn(dot_a, scale=0.8), FadeIn(dot_b, scale=0.8), FadeIn(dot_c, scale=0.8))
 
         # --- αβ space vector (right) ---
@@ -180,6 +195,17 @@ class ParkTransformation(Scene):
         self.play(FadeIn(d_bar_axis), FadeIn(d_bar_title))
         self.play(FadeIn(d_indicator), FadeIn(q_indicator))
 
+        # Live numeric readouts for d and q
+        d_value_text = always_redraw(lambda: DecimalNumber(
+            d_bar_tracker.get_value(), num_decimal_places=2, include_sign=True
+        ).scale(0.6).set_color(TEAL_A).next_to(d_bar_axis, LEFT, buff=0.4))
+
+        q_value_text = always_redraw(lambda: DecimalNumber(
+            q_bar_tracker.get_value(), num_decimal_places=2, include_sign=True
+        ).scale(0.6).set_color(PURPLE_A).next_to(d_bar_axis, RIGHT, buff=0.4))
+
+        self.play(FadeIn(d_value_text), FadeIn(q_value_text))
+
         # --- Equations panel (using MathTex for proper mathematical notation) ---
         # Clarke
         eq1_left  = MathTex(r"[\alpha, \beta, 0]^T", font_size=28)
@@ -209,8 +235,11 @@ class ParkTransformation(Scene):
 
         # --- Update function tying everything together ---
         def updater(m, dt):
-            t = t_tracker.get_value() + dt
-            t_tracker.set_value(t)
+            # Advance time but clamp within [0, DURATION] to avoid out-of-bounds on axes
+            t_next = t_tracker.get_value() + dt
+            if t_next > DURATION:
+                t_next = DURATION
+            t_tracker.set_value(t_next)
             d, q, _ = dq_components()
             d_bar_tracker.set_value(np.clip(d, -1.3, 1.3))
             q_bar_tracker.set_value(np.clip(q, -1.3, 1.3))
