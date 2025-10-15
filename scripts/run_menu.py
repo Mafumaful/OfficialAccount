@@ -6,6 +6,7 @@ import re
 import sys
 import subprocess
 from pathlib import Path
+import argparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,12 +61,14 @@ def choose(candidates):
         print("超出范围，请重新输入。")
 
 
-def run_manim(workdir: Path, file_name: str, scene_class: str):
-    # Follow README: cd into directory then run manim -pqh file.py SceneClass
+def run_manim(workdir: Path, file_name: str, scene_class: str, *, debug: bool = False):
+    # 根据是否为 debug 模式，选择不同清晰度
+    # -pql: 预览 + 低清晰度；-pqh: 预览 + 高清晰度
+    quality_flag = "-pql" if debug else "-pqh"
     cmd = [
         "bash",
         "-lc",
-        f"cd '{workdir}' && manim -pqh '{file_name}' {scene_class}"
+        f"cd '{workdir}' && manim {quality_flag} '{file_name}' {scene_class}"
     ]
     print("\n正在执行: ", cmd[-1])
     proc = subprocess.run(cmd)
@@ -73,12 +76,16 @@ def run_manim(workdir: Path, file_name: str, scene_class: str):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Manim 场景运行菜单")
+    parser.add_argument("--debug", action="store_true", help="调试模式，使用低分辨率/低清晰度渲染")
+    args = parser.parse_args()
+
     scenes = discover_scenes()
     if not scenes:
         print("未发现可运行的Manim场景。请在子目录中添加包含 Scene 派生类的 .py 文件。")
         return 1
     display, workdir, file_name, scene_class = choose(scenes)
-    return run_manim(workdir, file_name, scene_class)
+    return run_manim(workdir, file_name, scene_class, debug=args.debug)
 
 
 if __name__ == "__main__":
