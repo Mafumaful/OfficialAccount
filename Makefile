@@ -10,3 +10,4 @@ debug:
 clean:
 	@echo "Cleaning media files..."
 	@find . -type d -iname '*media*' -exec rm -rf {} +
+	@echo "Media files cleaned."

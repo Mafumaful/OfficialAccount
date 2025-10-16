@@ -1,13 +1,13 @@
-# -*- coding: utf-8 -*-  # 指定源码文件的编码为 UTF-8
+# -*- coding: utf-8 -*-
 """
 Park Transformation Visualization with Manim (No-LaTeX Version)  # 使用 Manim 可视化 Park 变换（不依赖 LaTeX）
 
 Tested with: Manim Community v0.19.0  # 测试版本说明
 
 Render examples:  # 渲染命令示例
-    manim -pqh park_transformation.py ParkTransformation  # 预览快速渲染
+    manim -pqh park_transformation_fixed.py ParkTransformation  # 预览快速渲染
     # 1080p  # 全高清渲染提示
-    # manim -p -r 1920,1080 park_transformation.py ParkTransformation  # 指定分辨率渲染
+    # manim -p -r 1920,1080 park_transformation_fixed.py ParkTransformation  # 指定分辨率渲染
 
 This scene explains the abc → αβ0 (Clarke) → dq0 (Park) transforms  # 本场景解释 abc→αβ0→dq0 变换流程
 without using MathTex/LaTeX. All formula panels are drawn using Text,  # 不用 LaTeX，全部用 Text/MathTex 绘制
@@ -25,260 +25,451 @@ PHASE_OFFSET = 0.0          # 初始电气角 [rad]
 SHOW_ZERO_AXIS = True       # 是否显示零序监视
 DURATION = 5                # 动画总时长 [s]
 
-# ---------- Math Helpers ----------  # 数学辅助函数
 
-def abc_waveforms(t, A=V_AMPLITUDE, omega=OMEGA, phi=PHASE_OFFSET):  # 生成三相正弦波形
-    Va = A * np.cos(omega * t + phi)  # a 相瞬时值
-    Vb = A * np.cos(omega * t + phi - 2*np.pi/3)  # b 相，滞后 120°
-    Vc = A * np.cos(omega * t + phi + 2*np.pi/3)  # c 相，超前 120°
-    return np.array([Va, Vb, Vc])  # 返回列向量 [Va, Vb, Vc]
+# ========== MATHEMATICAL CALCULATIONS ========== #
+
+class TransformCalculations:
+    """电力系统坐标变换的数学计算类"""
+
+    @staticmethod
+    def abc_waveforms(t, A=V_AMPLITUDE, omega=OMEGA, phi=PHASE_OFFSET):
+        """生成三相正弦波形"""
+        Va = A * np.cos(omega * t + phi)
+        Vb = A * np.cos(omega * t + phi - 2*np.pi/3)
+        Vc = A * np.cos(omega * t + phi + 2*np.pi/3)
+        return np.array([Va, Vb, Vc])
+
+    @staticmethod
+    def clarke_matrix():
+        """Clarke变换矩阵 (abc -> αβ0)"""
+        return np.array([
+            [2/3, -1/3, -1/3],
+            [0, np.sqrt(3)/3, -np.sqrt(3)/3],
+            [1/3, 1/3, 1/3],
+        ])
+
+    @staticmethod
+    def park_matrix(theta):
+        """Park旋转矩阵 (αβ0 -> dq0)"""
+        c, s = np.cos(theta), np.sin(theta)
+        return np.array([
+            [ c,  s, 0],
+            [-s,  c, 0],
+            [ 0,  0, 1],
+        ])
+
+    @staticmethod
+    def abc_to_alphabeta(abc):
+        """abc到αβ0变换"""
+        return TransformCalculations.clarke_matrix() @ abc
+
+    @staticmethod
+    def alphabeta_to_dq0(alpha_beta_0, theta):
+        """αβ0到dq0变换"""
+        return TransformCalculations.park_matrix(theta) @ alpha_beta_0
+
+    @staticmethod
+    def abc_to_dq0(abc, theta):
+        """直接从abc到dq0的组合变换"""
+        alpha_beta_0 = TransformCalculations.abc_to_alphabeta(abc)
+        return TransformCalculations.alphabeta_to_dq0(alpha_beta_0, theta)
+
+    @staticmethod
+    def get_electrical_angle(t, omega=OMEGA, phi=PHASE_OFFSET):
+        """计算电气角度"""
+        return omega * t + phi
 
 
-def clarke_matrix():  # 构造 Clarke 变换矩阵（功率不变型 2/3 缩放）
-    """abc -> αβ0 matrix (power-invariant variant with 2/3 scaling)."""
-    return np.array([
-        [2/3, -1/3, -1/3],  # α 行：2/3*[1, -1/2, -1/2]
-        [0,   np.sqrt(3)/3, -np.sqrt(3)/3],  # β 行：等效 2/3*[0, √3/2, -√3/2]
-        [1/3, 1/3, 1/3],  # 0 行：零序分量平均值
-    ])
+class GeometryUtils:
+    """几何计算工具类"""
+
+    @staticmethod
+    def project_point_to_axis(point, axis_dir):
+        """将点投影到过原点的指定方向轴"""
+        p = np.array([point[0], point[1]])
+        u = np.array([axis_dir[0], axis_dir[1]])
+        u = u / (np.linalg.norm(u) + 1e-9)
+        proj_len = np.dot(p, u)
+        proj = proj_len * u
+        return np.array([proj[0], proj[1], 0.0])
 
 
-def park_matrix(theta):  # 构造 Park 旋转矩阵（αβ0→dq0）
-    """αβ0 -> dq0 rotation (d along cosθ, q along sinθ)."""
-    c, s = np.cos(theta), np.sin(theta)  # 计算 cosθ 与 sinθ
-    R = np.array([
-        [ c,  s, 0],  # d 轴方向（沿 cosθ）
-        [-s,  c, 0],  # q 轴方向（沿 sinθ）
-        [ 0,  0, 1],  # 0 序不变
-    ])
-    return R  # 返回旋转矩阵
+# ========== DISPLAY CREATION FUNCTIONS ========== #
 
+class DisplayCreator:
+    """Manim可视化元素创建类"""
 
-def abc_to_dq0(abc, theta):  # 组合 Clarke 与 Park，得到 dq0
-    T_clarke = clarke_matrix()  # Clarke 矩阵
-    alpha_beta_0 = T_clarke @ abc  # abc→αβ0
-    T_park = park_matrix(theta)  # Park 矩阵
-    dq0 = T_park @ alpha_beta_0  # αβ0→dq0
-    return dq0  # 返回 [d, q, 0]
+    @staticmethod
+    def create_title_section():
+        """创建标题区域"""
+        title = Text("Park Transformation (abc → dq0)", weight=BOLD).scale(0.8)
+        subtitle = Text("Clarke → Park with rotating reference frame", font_size=28, color=GRAY_B)
+        return VGroup(title, subtitle).arrange(DOWN, buff=0.2).shift(UP*1.5)
 
+    @staticmethod
+    def create_left_panel():
+        """创建左侧时域波形面板"""
+        axes = Axes(
+            x_range=[0, DURATION, 1], y_range=[-1.3, 1.3, 1],
+            x_length=6.8, y_length=3.2,
+            tips=False, axis_config={"include_numbers": False, "color": GRAY_B}
+        ).to_edge(LEFT, buff=0.7).shift(DOWN*0.5)
 
-# ---------- Utility: projection helper ----------  # 投影辅助（当前未直接使用）
-def project_point_to_axis(point, axis_dir):  # 将点投影到过原点的指定方向轴
-    """Project a point P (in scene coords) onto a directed axis through origin."""
-    p = np.array([point[0], point[1]])  # 取 xy 分量
-    u = np.array([axis_dir[0], axis_dir[1]])  # 方向向量 xy 分量
-    u = u / (np.linalg.norm(u) + 1e-9)  # 归一化，避免除零
-    proj_len = np.dot(p, u)  # 投影长度
-    proj = proj_len * u  # 投影点 xy
-    return np.array([proj[0], proj[1], 0.0])  # 返回场景坐标系点
+        label = Text("Phase Voltages: a, b, c", font_size=26, color=GRAY_B).next_to(axes, UP, buff=0.2)
+        return axes, label
 
+    @staticmethod
+    def create_right_panel():
+        """创建右侧αβ平面"""
+        plane = NumberPlane(
+            x_range=[-1.6, 1.6, 1], y_range=[-1.6, 1.6, 1],
+            x_length=5.0, y_length=5.0,
+            faded_line_ratio=2,
+            background_line_style={"stroke_color": GRAY_D, "stroke_opacity": 0.6}
+        ).to_edge(RIGHT, buff=0.9).shift(DOWN*0.1)
 
-# ---------- Manim Scene ----------  # Manim 场景类
-class ParkTransformation(Scene):  # 定义场景
-    def construct(self):  # 场景主逻辑
-        self.camera.background_color = "#0d1321"  # 设置背景颜色
-        title = Text("Park Transformation (abc → dq0)", weight=BOLD).scale(0.8)  # 标题
-        subtitle = Text("Clarke → Park with rotating reference frame", font_size=28, color=GRAY_B)  # 副标题
-        header = VGroup(title, subtitle).arrange(DOWN, buff=0.2).to_edge(UP)  # 顶部排列
-        self.play(FadeIn(header, shift=UP))  # 标题入场
+        label = MathTex(r"\alpha\beta \text{ plane and dq frame}", font_size=26, color=GRAY_B).next_to(plane, UP, buff=0.2)
+        return plane, label
 
-        # Left: time-domain phase waveforms; Right: space vector & rotating axes  # 左侧时域曲线，右侧空间矢量与旋转坐标
-        left_panel = Axes(  # 左侧坐标轴（时域）
-            x_range=[0, DURATION, 1], y_range=[-1.3, 1.3, 1],  # x 时间范围，y 电压范围
-            x_length=6.8, y_length=3.2,  # 尺寸
-            tips=False, axis_config={"include_numbers": False, "color": GRAY_B}  # 不显示刻度数字
-        )
-        left_panel.to_edge(LEFT, buff=0.7).shift(DOWN*0.5)  # 放置到左侧
-        left_label = Text("Phase Voltages: a, b, c", font_size=26, color=GRAY_B).next_to(left_panel, UP, buff=0.2)  # 左侧标题
-
-        right_plane = NumberPlane(  # 右侧 αβ 平面
-            x_range=[-1.6, 1.6, 1], y_range=[-1.6, 1.6, 1],  # 坐标范围
-            x_length=5.0, y_length=5.0,  # 尺寸
-            faded_line_ratio=2,  # 背景线淡化
-            background_line_style={"stroke_color": GRAY_D, "stroke_opacity": 0.6}  # 网格样式
-        ).to_edge(RIGHT, buff=0.9).shift(DOWN*0.1)  # 放置到右侧
-        right_label = MathTex(r"\alpha\beta \text{ plane and dq frame}", font_size=26, color=GRAY_B).next_to(right_plane, UP, buff=0.2)  # 右侧说明
-
-        # fade out the header  # 淡出页眉
-        self.play(FadeOut(header))
-        self.play(FadeIn(left_panel), FadeIn(right_plane), FadeIn(left_label), FadeIn(right_label))  # 面板入场
-
-        # Time tracker (drives everything)  # 驱动时间的变量
-        t_tracker = ValueTracker(0.0)
-
-        # --- Phase signals (left) ---  # 左侧三相信号
-        colors = {"a": RED, "b": GREEN, "c": BLUE}  # 颜色映射
-        def make_phase_curve(phase_shift, col):  # 绘制某相的曲线
+    @staticmethod
+    def create_phase_curves(left_panel, colors):
+        """创建三相波形曲线"""
+        def make_phase_curve(phase_shift, col):
             return left_panel.plot(
-                lambda tau: V_AMPLITUDE * np.cos(OMEGA * tau + PHASE_OFFSET + phase_shift),  # 余弦波
-                x_range=[0, DURATION], color=col  # 范围与颜色
+                lambda tau: V_AMPLITUDE * np.cos(OMEGA * tau + PHASE_OFFSET + phase_shift),
+                x_range=[0, DURATION], color=col
             )
-        curve_a = always_redraw(lambda: make_phase_curve(0, colors["a"]))  # a 相曲线（动态重绘）
-        curve_b = always_redraw(lambda: make_phase_curve(-2*np.pi/3, colors["b"]))  # b 相曲线
-        curve_c = always_redraw(lambda: make_phase_curve(+2*np.pi/3, colors["c"]))  # c 相曲线
-        self.play(Create(curve_a), Create(curve_b), Create(curve_c))  # 创建三条曲线
 
-        # Moving dots on each waveform at current t  # 每条曲线上移动的点
-        dot_a = always_redraw(lambda: Dot(color=colors["a"]).move_to(  # a 相点
+        curve_a = always_redraw(lambda: make_phase_curve(0, colors["a"]))
+        curve_b = always_redraw(lambda: make_phase_curve(-2*np.pi/3, colors["b"]))
+        curve_c = always_redraw(lambda: make_phase_curve(+2*np.pi/3, colors["c"]))
+        return curve_a, curve_b, curve_c
+
+    @staticmethod
+    def create_phase_dots(left_panel, t_tracker, colors):
+        """创建三相波形上的移动点"""
+        dot_a = always_redraw(lambda: Dot(color=colors["a"]).move_to(
             left_panel.c2p(
-                min(t_tracker.get_value(), DURATION),  # 限制在坐标范围内
-                V_AMPLITUDE*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET)  # 当前时刻值
+                min(t_tracker.get_value(), DURATION),
+                V_AMPLITUDE*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET)
             )
         ))
-        dot_b = always_redraw(lambda: Dot(color=colors["b"]).move_to(  # b 相点
+        dot_b = always_redraw(lambda: Dot(color=colors["b"]).move_to(
             left_panel.c2p(
                 min(t_tracker.get_value(), DURATION),
                 V_AMPLITUDE*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET-2*np.pi/3)
             )
         ))
-        dot_c = always_redraw(lambda: Dot(color=colors["c"]).move_to(  # c 相点
+        dot_c = always_redraw(lambda: Dot(color=colors["c"]).move_to(
             left_panel.c2p(
                 min(t_tracker.get_value(), DURATION),
                 V_AMPLITUDE*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET+2*np.pi/3)
             )
         ))
-        self.play(FadeIn(dot_a, scale=0.8), FadeIn(dot_b, scale=0.8), FadeIn(dot_c, scale=0.8))  # 点入场
+        return dot_a, dot_b, dot_c
 
-        # --- αβ space vector (right) ---  # 右侧空间矢量
-        def alpha_beta_point():  # 计算 αβ 点
-            abc = abc_waveforms(t_tracker.get_value())  # 取当前三相值
-            alpha, beta, zero = (clarke_matrix() @ abc)  # Clarke 变换
-            return np.array([alpha, beta, 0])  # 返回 αβ 坐标
+    @staticmethod
+    def create_space_vector(right_plane, t_tracker):
+        """创建空间矢量"""
+        def alpha_beta_point():
+            abc = TransformCalculations.abc_waveforms(t_tracker.get_value())
+            alpha, beta, zero = TransformCalculations.abc_to_alphabeta(abc)
+            return np.array([alpha, beta, 0])
 
-        space_vec = always_redraw(lambda: Arrow(  # 空间矢量箭头
-            start=right_plane.c2p(0, 0), end=right_plane.c2p(*alpha_beta_point()[:2]),  # 原点到 αβ
-            buff=0, stroke_width=6, max_tip_length_to_length_ratio=0.06, color=YELLOW  # 样式
-        ))
-        self.play(GrowArrow(space_vec))  # 绘制箭头
+        return always_redraw(lambda: Arrow(
+            start=right_plane.c2p(0, 0),
+            end=right_plane.c2p(*alpha_beta_point()[:2]),
+            buff=0, stroke_width=6, max_tip_length_to_length_ratio=0.06, color=YELLOW
+        )), alpha_beta_point
 
-        # dq rotating axes anchored at origin  # 旋转 dq 坐标轴
-        d_axis = always_redraw(lambda: Arrow(  # d 轴箭头
-            right_plane.c2p(0, 0), right_plane.c2p(1.3*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET), 1.3*np.sin(OMEGA*t_tracker.get_value()+PHASE_OFFSET)),
+    @staticmethod
+    def create_dq_axes(right_plane, t_tracker):
+        """创建旋转dq坐标轴"""
+        d_axis = always_redraw(lambda: Arrow(
+            right_plane.c2p(0, 0),
+            right_plane.c2p(
+                1.3*np.cos(TransformCalculations.get_electrical_angle(t_tracker.get_value())),
+                1.3*np.sin(TransformCalculations.get_electrical_angle(t_tracker.get_value()))
+            ),
             color=TEAL_A, buff=0, stroke_width=5
         ))
-        q_axis = always_redraw(lambda: Arrow(  # q 轴箭头（与 d 轴正交）
-            right_plane.c2p(0, 0), right_plane.c2p(-1.3*np.sin(OMEGA*t_tracker.get_value()+PHASE_OFFSET), 1.3*np.cos(OMEGA*t_tracker.get_value()+PHASE_OFFSET)),
+
+        q_axis = always_redraw(lambda: Arrow(
+            right_plane.c2p(0, 0),
+            right_plane.c2p(
+                -1.3*np.sin(TransformCalculations.get_electrical_angle(t_tracker.get_value())),
+                1.3*np.cos(TransformCalculations.get_electrical_angle(t_tracker.get_value()))
+            ),
             color=PURPLE_A, buff=0, stroke_width=5
         ))
-        d_label = always_redraw(lambda: Text("d", font_size=28, color=TEAL_A).move_to(d_axis.get_end()+0.3*RIGHT))  # d 轴标注
-        q_label = always_redraw(lambda: Text("q", font_size=28, color=PURPLE_A).move_to(q_axis.get_end()+0.3*UP))  # q 轴标注
-        self.play(FadeIn(d_axis, q_axis, d_label, q_label))  # 坐标轴入场
 
-        # Projection of space vector onto dq axes  # 计算 dq 分量
-        def dq_components():  # 返回 [d, q, 0]
-            abc = abc_waveforms(t_tracker.get_value())  # 当前 abc
-            dq0 = abc_to_dq0(abc, theta=OMEGA*t_tracker.get_value()+PHASE_OFFSET)  # 变换到 dq0
-            return dq0  # [d, q, 0]
+        d_label = always_redraw(lambda: Text("d", font_size=28, color=TEAL_A).move_to(d_axis.get_end()+0.3*RIGHT))
+        q_label = always_redraw(lambda: Text("q", font_size=28, color=PURPLE_A).move_to(q_axis.get_end()+0.3*UP))
 
-        # Projection lines should project onto fixed αβ axes, not rotating dq axes  # 在 αβ 上做投影辅助线
-        d_comp_line = always_redraw(lambda: DashedLine(  # 到 α 轴的投影虚线
+        return d_axis, q_axis, d_label, q_label
+
+    @staticmethod
+    def create_projection_lines(space_vec, alpha_beta_point_func, right_plane):
+        """创建投影辅助线"""
+        d_comp_line = always_redraw(lambda: DashedLine(
             start=space_vec.get_end(),
-            end=right_plane.c2p(alpha_beta_point()[0], 0),  # 投到 α 轴（水平）
+            end=right_plane.c2p(alpha_beta_point_func()[0], 0),
             color=TEAL_A
         ))
-        q_comp_line = always_redraw(lambda: DashedLine(  # 到 β 轴的投影虚线
+        q_comp_line = always_redraw(lambda: DashedLine(
             start=space_vec.get_end(),
-            end=right_plane.c2p(0, alpha_beta_point()[1]),  # 投到 β 轴（垂直）
+            end=right_plane.c2p(0, alpha_beta_point_func()[1]),
             color=PURPLE_A
         ))
-        self.play(FadeIn(d_comp_line), FadeIn(q_comp_line))  # 显示投影线
+        return d_comp_line, q_comp_line
 
-        # Small bars showing numerical d, q values  # 下方条形刻度显示 d/q 数值
-        d_bar_axis = NumberLine(x_range=[-1.3, 1.3, 0.5], length=5.5, include_numbers=True).next_to(right_plane, DOWN, buff=0.5)  # 数轴
-        d_bar_title = Text("d, q components", font_size=24, color=GRAY_B).next_to(d_bar_axis, UP, buff=0.1)  # 标题
-        d_bar_tracker = ValueTracker(0.0)  # d 数值跟踪
-        q_bar_tracker = ValueTracker(0.0)  # q 数值跟踪
+    @staticmethod
+    def create_dq_indicators(right_plane):
+        """创建dq分量指示器"""
+        d_bar_axis = NumberLine(x_range=[-1.3, 1.3, 0.5], length=5.5, include_numbers=True).next_to(right_plane, DOWN, buff=0.5)
+        d_bar_title = Text("d, q components", font_size=24, color=GRAY_B).next_to(d_bar_axis, UP, buff=0.1)
 
-        d_indicator = always_redraw(lambda: Triangle(color=TEAL_A, fill_opacity=1).scale(0.12).next_to(d_bar_axis.n2p(d_bar_tracker.get_value()), UP, buff=0))  # d 指示三角
-        q_indicator = always_redraw(lambda: Triangle(color=PURPLE_A, fill_opacity=1).scale(0.12).next_to(d_bar_axis.n2p(q_bar_tracker.get_value()), DOWN, buff=0).rotate(np.pi))  # q 指示三角
+        d_bar_tracker = ValueTracker(0.0)
+        q_bar_tracker = ValueTracker(0.0)
 
-        self.play(FadeIn(d_bar_axis), FadeIn(d_bar_title))  # 数轴与标题入场
-        self.play(FadeIn(d_indicator), FadeIn(q_indicator))  # 指示器入场
+        d_indicator = always_redraw(lambda: Triangle(color=TEAL_A, fill_opacity=1).scale(0.12).next_to(d_bar_axis.n2p(d_bar_tracker.get_value()), UP, buff=0))
+        q_indicator = always_redraw(lambda: Triangle(color=PURPLE_A, fill_opacity=1).scale(0.12).next_to(d_bar_axis.n2p(q_bar_tracker.get_value()), DOWN, buff=0).rotate(np.pi))
 
-        # Live numeric readouts for d and q  # 实时数值
-        d_value_text = always_redraw(lambda: DecimalNumber(  # d 数字显示
+        d_value_text = always_redraw(lambda: DecimalNumber(
             d_bar_tracker.get_value(), num_decimal_places=2, include_sign=True
         ).scale(0.6).set_color(TEAL_A).next_to(d_bar_axis, LEFT, buff=0.4))
 
-        q_value_text = always_redraw(lambda: DecimalNumber(  # q 数字显示
+        q_value_text = always_redraw(lambda: DecimalNumber(
             q_bar_tracker.get_value(), num_decimal_places=2, include_sign=True
         ).scale(0.6).set_color(PURPLE_A).next_to(d_bar_axis, RIGHT, buff=0.4))
 
-        self.play(FadeIn(d_value_text), FadeIn(q_value_text))  # 数字显示入场
+        return d_bar_axis, d_bar_title, d_bar_tracker, q_bar_tracker, d_indicator, q_indicator, d_value_text, q_value_text
 
-        # --- Equations panel (using MathTex for proper mathematical notation) ---  # 公式面板（MathTex）
-        # Clarke  # Clarke 变换矩阵展示
-        eq1_left  = MathTex(r"[\alpha, \beta, 0]^T", font_size=28)
-        eq1_eq    = MathTex("=", font_size=28)
-        eq1_mat   = MathTex(r"\begin{bmatrix} \frac{2}{3} & -\frac{1}{3} & -\frac{1}{3} \\ 0 & \frac{\sqrt{3}}{3} & -\frac{\sqrt{3}}{3} \\ \frac{1}{3} & \frac{1}{3} & \frac{1}{3} \end{bmatrix}", font_size=20)
+    @staticmethod
+    def create_equations_panel():
+        """创建公式面板"""
+        eq1_left = MathTex(r"[\alpha, \beta, 0]^T", font_size=28)
+        eq1_eq = MathTex("=", font_size=28)
+        eq1_mat = MathTex(r"\begin{bmatrix} \frac{2}{3} & -\frac{1}{3} & -\frac{1}{3} \\\\ 0 & \frac{\sqrt{3}}{3} & -\frac{\sqrt{3}}{3} \\\\ \frac{1}{3} & \frac{1}{3} & \frac{1}{3} \end{bmatrix}", font_size=20)
         eq1_right = MathTex(r"[a, b, c]^T", font_size=28)
         eq1 = VGroup(eq1_left, eq1_eq, eq1_mat, eq1_right).arrange(RIGHT, buff=0.2)
 
-        # Park  # Park 旋转矩阵展示
-        eq2_left  = MathTex(r"[d, q, 0]^T", font_size=28)
-        eq2_eq    = MathTex("=", font_size=28)
-        eq2_mat   = MathTex(r"\begin{bmatrix} \cos\theta & \sin\theta & 0 \\ -\sin\theta & \cos\theta & 0 \\ 0 & 0 & 1 \end{bmatrix}", font_size=20)
+        eq2_left = MathTex(r"[d, q, 0]^T", font_size=28)
+        eq2_eq = MathTex("=", font_size=28)
+        eq2_mat = MathTex(r"\begin{bmatrix} \cos\theta & \sin\theta & 0 \\\\ -\sin\theta & \cos\theta & 0 \\\\ 0 & 0 & 1 \end{bmatrix}", font_size=20)
         eq2_right = MathTex(r"[\alpha, \beta, 0]^T", font_size=28)
         eq2 = VGroup(eq2_left, eq2_eq, eq2_mat, eq2_right).arrange(RIGHT, buff=0.2)
 
-        eq_group = VGroup(eq1, eq2).arrange(DOWN, aligned_edge=LEFT, buff=0.35)  # 堆叠两行公式
-        eq_panel = SurroundingRectangle(eq_group, color=GRAY_C, corner_radius=0.15, fill_opacity=0.05)  # 外框
-        eq_block = VGroup(eq_panel, eq_group).scale(0.8).to_corner(UR).shift(0.2*LEFT + 0.1*DOWN)  # 放置于右上角
-        self.play(FadeIn(eq_block))  # 展示公式块
+        eq_group = VGroup(eq1, eq2).arrange(DOWN, aligned_edge=LEFT, buff=0.35)
+        eq_panel = SurroundingRectangle(eq_group, color=GRAY_C, corner_radius=0.15, fill_opacity=0.05)
+        eq_block = VGroup(eq_panel, eq_group).scale(0.75).to_edge(UP, buff=0.3).to_edge(RIGHT, buff=0.5)
 
-        # Note for theta  # θ 的说明
+        return eq_block
+
+    @staticmethod
+    def create_theta_note(eq_block):
+        """创建θ说明"""
         theta_note = VGroup(
-            MathTex(r"\theta = \omega_e t + \theta_0", font_size=24, color=YELLOW),  # 角度表达
-            Text("(electrical angle of rotating dq frame)", font_size=22, color=GRAY_B)  # 文字注释
-        ).arrange(DOWN, buff=0.08).next_to(eq_block, DOWN, buff=0.3).align_to(eq_block, RIGHT)  # 放置
-        self.play(FadeIn(theta_note, shift=UP))  # 展示说明
+            MathTex(r"\theta = \omega_e t + \theta_0", font_size=22, color=YELLOW),
+            Text("(electrical angle)", font_size=20, color=GRAY_B)
+        ).arrange(DOWN, buff=0.08).next_to(eq_block, DOWN, buff=0.25).align_to(eq_block, RIGHT)
 
-        # --- Update function tying everything together ---  # 更新器：推进时间并更新数值
-        def updater(m, dt):  # 每帧调用，dt 为帧间隔
-            # Advance time but clamp within [0, DURATION] to avoid out-of-bounds on axes  # 推进时间并截断
-            t_next = t_tracker.get_value() + dt  # 计算下一时刻
-            if t_next > DURATION:  # 超出则截断
+        return theta_note
+
+    @staticmethod
+    def create_axis_labels(right_plane):
+        """创建αβ轴标签"""
+        alpha_label = MathTex(r"\alpha", font_size=28, color=GRAY_B).next_to(right_plane.x_axis, RIGHT, buff=0.1)
+        beta_label = MathTex(r"\beta", font_size=28, color=GRAY_B).next_to(right_plane.y_axis, UP, buff=0.1)
+        return alpha_label, beta_label
+
+    @staticmethod
+    def create_zero_sequence_monitor(d_bar_axis, t_tracker):
+        """创建零序监视器"""
+        zero_axis = NumberLine(x_range=[-1.0, 1.0, 0.5], length=4.2, include_numbers=True)
+        zero_axis.next_to(d_bar_axis, DOWN, buff=0.7)
+        zero_title = Text("0-seq (should be ≈0 for balanced)", font_size=22, color=GRAY_B).next_to(zero_axis, UP, buff=0.1)
+        zero_indicator = always_redraw(lambda: Triangle(color=YELLOW, fill_opacity=1).scale(0.1).next_to(
+            zero_axis.n2p(TransformCalculations.abc_to_alphabeta(TransformCalculations.abc_waveforms(t_tracker.get_value()))[2]),
+            UP, buff=0
+        ))
+        return zero_title, zero_axis, zero_indicator
+
+    @staticmethod
+    def create_direct_equation():
+        """创建直接变换公式"""
+        return MathTex(
+            r"[d, q, 0]^T = \frac{2}{3} \begin{bmatrix} \cos\theta & \cos(\theta-\frac{2\pi}{3}) & \cos(\theta+\frac{2\pi}{3}) \\\\ -\sin\theta & -\sin(\theta-\frac{2\pi}{3}) & -\sin(\theta+\frac{2\pi}{3}) \\\\ \frac{1}{2} & \frac{1}{2} & \frac{1}{2} \end{bmatrix} [a, b, c]^T",
+            font_size=18
+        ).to_edge(UP, buff=0.3).to_edge(RIGHT, buff=0.5)
+
+
+# ========== ANIMATION CONTROL FUNCTIONS ========== #
+
+class AnimationController:
+    """动画控制类"""
+
+    @staticmethod
+    def create_dq_updater(t_tracker, d_bar_tracker, q_bar_tracker):
+        """创建dq分量更新器"""
+        def updater(m, dt):
+            t_next = t_tracker.get_value() + dt
+            if t_next > DURATION:
                 t_next = DURATION
-            t_tracker.set_value(t_next)  # 更新时间
-            d, q, _ = dq_components()  # 计算 dq
-            d_bar_tracker.set_value(np.clip(d, -1.3, 1.3))  # 限幅更新 d
-            q_bar_tracker.set_value(np.clip(q, -1.3, 1.3))  # 限幅更新 q
-        ticker = always_redraw(lambda: Dot().set_opacity(0))  # 不可见占位 mobject，用于挂载 updater
-        ticker.add_updater(updater)  # 绑定更新器
-        self.add(ticker)  # 加入场景
+            t_tracker.set_value(t_next)
 
-        # Axis labels  # αβ 轴标签
-        alpha_label = MathTex(r"\alpha", font_size=28, color=GRAY_B).next_to(right_plane.x_axis, RIGHT, buff=0.1)  # α 标签
-        beta_label = MathTex(r"\beta", font_size=28, color=GRAY_B).next_to(right_plane.y_axis, UP, buff=0.1)  # β 标签
-        self.play(FadeIn(alpha_label), FadeIn(beta_label))  # 标签入场
+            abc = TransformCalculations.abc_waveforms(t_tracker.get_value())
+            theta = TransformCalculations.get_electrical_angle(t_tracker.get_value())
+            dq0 = TransformCalculations.abc_to_dq0(abc, theta)
 
-        # Optional zero sequence monitor  # 可选零序监视条
-        if SHOW_ZERO_AXIS:  # 控制是否显示
-            zero_axis = NumberLine(x_range=[-1.0, 1.0, 0.5], length=4.2, include_numbers=True)  # 零序数轴
-            zero_axis.next_to(d_bar_axis, DOWN, buff=0.7)  # 放置位置
-            zero_title = Text("0-seq (should be ≈0 for balanced)", font_size=22, color=GRAY_B).next_to(zero_axis, UP, buff=0.1)  # 标题
-            zero_indicator = always_redraw(lambda: Triangle(color=YELLOW, fill_opacity=1).scale(0.1).next_to(zero_axis.n2p((clarke_matrix() @ abc_waveforms(t_tracker.get_value()))[2]), UP, buff=0))  # 零序指示
-            self.play(FadeIn(zero_title), FadeIn(zero_axis), FadeIn(zero_indicator))  # 入场
+            d_bar_tracker.set_value(np.clip(dq0[0], -1.3, 1.3))
+            q_bar_tracker.set_value(np.clip(dq0[1], -1.3, 1.3))
 
-        self.wait(DURATION)  # 等待，让动画运行完时长
-        ticker.clear_updaters()  # 清除更新器
+        return updater
 
-        # Hide the old equation panel, theta note, title, and axis labels to make room for the direct formula  # 收起右上角内容
-        self.play(FadeOut(eq_block), FadeOut(theta_note), FadeOut(right_label), FadeOut(alpha_label), FadeOut(beta_label))  # 淡出
+    @staticmethod
+    def get_dq_components_function(t_tracker):
+        """获取dq分量计算函数"""
+        def dq_components():
+            abc = TransformCalculations.abc_waveforms(t_tracker.get_value())
+            theta = TransformCalculations.get_electrical_angle(t_tracker.get_value())
+            return TransformCalculations.abc_to_dq0(abc, theta)
+        return dq_components
 
-        # Direct abc→dq0 (shown as plain text)  # 直接给出 abc→dq0 的矩阵式
-        eq_direct = MathTex(
-            r"[d, q, 0]^T = \frac{2}{3} \begin{bmatrix} \cos\theta & \cos(\theta-\frac{2\pi}{3}) & \cos(\theta+\frac{2\pi}{3}) \\ -\sin\theta & -\sin(\theta-\frac{2\pi}{3}) & -\sin(\theta+\frac{2\pi}{3}) \\ \frac{1}{2} & \frac{1}{2} & \frac{1}{2} \end{bmatrix} [a, b, c]^T",
-            font_size=18  # 字体大小
+
+# ========== MANIM SCENE ========== #
+
+class ParkTransformation(Scene):
+    """Park变换可视化主场景类"""
+
+    def construct(self):
+        """场景主要构建逻辑"""
+        self.setup_scene()
+        self.create_main_panels()
+        self.create_waveforms_and_vectors()
+        self.create_equations_and_indicators()
+        self.run_animation()
+        self.show_final_equation()
+
+    def setup_scene(self):
+        """设置场景基本参数"""
+        self.camera.background_color = "#0d1321"
+
+    def create_main_panels(self):
+        """创建主要显示面板"""
+        # 创建标题
+        header = DisplayCreator.create_title_section()
+        self.play(FadeIn(header, shift=UP))
+
+        # 创建左右面板
+        self.left_panel, left_label = DisplayCreator.create_left_panel()
+        self.right_plane, right_label = DisplayCreator.create_right_panel()
+
+        # 淡出标题，显示面板
+        self.play(FadeOut(header))
+        self.play(FadeIn(self.left_panel), FadeIn(self.right_plane), FadeIn(left_label), FadeIn(right_label))
+
+        # 保存标签引用供后续使用
+        self.right_label = right_label
+
+    def create_waveforms_and_vectors(self):
+        """创建波形和矢量显示"""
+        # 时间跟踪器
+        self.t_tracker = ValueTracker(0.0)
+
+        # 创建三相波形
+        colors = {"a": RED, "b": GREEN, "c": BLUE}
+        curve_a, curve_b, curve_c = DisplayCreator.create_phase_curves(self.left_panel, colors)
+        self.play(Create(curve_a), Create(curve_b), Create(curve_c))
+
+        # 创建波形上的移动点
+        dot_a, dot_b, dot_c = DisplayCreator.create_phase_dots(self.left_panel, self.t_tracker, colors)
+        self.play(FadeIn(dot_a, scale=0.8), FadeIn(dot_b, scale=0.8), FadeIn(dot_c, scale=0.8))
+
+        # 创建空间矢量
+        self.space_vec, self.alpha_beta_point_func = DisplayCreator.create_space_vector(self.right_plane, self.t_tracker)
+        self.play(GrowArrow(self.space_vec))
+
+        # 创建旋转dq坐标轴
+        d_axis, q_axis, d_label, q_label = DisplayCreator.create_dq_axes(self.right_plane, self.t_tracker)
+        self.play(FadeIn(d_axis, q_axis, d_label, q_label))
+
+        # 创建投影线
+        d_comp_line, q_comp_line = DisplayCreator.create_projection_lines(
+            self.space_vec, self.alpha_beta_point_func, self.right_plane
         )
-        eq_direct.to_corner(UR).shift(0.2*LEFT + 0.1*DOWN)  # 放到右上角
-        self.play(Write(eq_direct))  # 写入公式
+        self.play(FadeIn(d_comp_line), FadeIn(q_comp_line))
 
-        self.wait(2)  # 暂停 2 秒
-        self.play(*map(FadeOut, self.mobjects))  # 清空场景
-        outro = Text("Park transform → DC on d-axis for balanced three-phase.", font_size=34)  # 结束语
-        self.play(FadeIn(outro, shift=UP))  # 显示结束语
-        self.wait(2)  # 结束前等待
+    def create_equations_and_indicators(self):
+        """创建公式和指示器"""
+        # 创建dq分量指示器
+        (self.d_bar_axis, d_bar_title, self.d_bar_tracker, self.q_bar_tracker,
+         d_indicator, q_indicator, d_value_text, q_value_text) = DisplayCreator.create_dq_indicators(self.right_plane)
+
+        self.play(FadeIn(self.d_bar_axis), FadeIn(d_bar_title))
+        self.play(FadeIn(d_indicator), FadeIn(q_indicator))
+        self.play(FadeIn(d_value_text), FadeIn(q_value_text))
+
+        # 创建公式面板
+        eq_block = DisplayCreator.create_equations_panel()
+        self.play(FadeOut(self.right_label))
+        self.play(FadeIn(eq_block))
+
+        # 创建θ说明
+        theta_note = DisplayCreator.create_theta_note(eq_block)
+        self.play(FadeIn(theta_note, shift=UP))
+
+        # 保存引用
+        self.eq_block = eq_block
+        self.theta_note = theta_note
+
+        # 创建轴标签
+        alpha_label, beta_label = DisplayCreator.create_axis_labels(self.right_plane)
+        self.play(FadeIn(alpha_label), FadeIn(beta_label))
+
+        # 保存标签引用
+        self.alpha_label = alpha_label
+        self.beta_label = beta_label
+
+        # 可选零序监视器
+        if SHOW_ZERO_AXIS:
+            zero_title, zero_axis, zero_indicator = DisplayCreator.create_zero_sequence_monitor(
+                self.d_bar_axis, self.t_tracker
+            )
+            self.play(FadeIn(zero_title), FadeIn(zero_axis), FadeIn(zero_indicator))
+
+    def run_animation(self):
+        """运行主动画"""
+        # 创建更新器
+        updater = AnimationController.create_dq_updater(self.t_tracker, self.d_bar_tracker, self.q_bar_tracker)
+
+        # 创建不可见的更新器载体
+        ticker = always_redraw(lambda: Dot().set_opacity(0))
+        ticker.add_updater(updater)
+        self.add(ticker)
+
+        # 运行动画
+        self.wait(DURATION)
+        ticker.clear_updaters()
+
+    def show_final_equation(self):
+        """显示最终公式"""
+        # 隐藏旧元素
+        self.play(FadeOut(self.eq_block), FadeOut(self.theta_note),
+                  FadeOut(self.alpha_label), FadeOut(self.beta_label))
+
+        # 显示直接变换公式
+        eq_direct = DisplayCreator.create_direct_equation()
+        self.play(Write(eq_direct))
+
+        self.wait(2)
+
+        # 结束场景
+        self.play(*map(FadeOut, self.mobjects))
+        outro = Text("Park transform → DC on d-axis for balanced three-phase.", font_size=34)
+        self.play(FadeIn(outro, shift=UP))
+        self.wait(2)
+
 
 if __name__ == "__main__":
     scene = ParkTransformation()
